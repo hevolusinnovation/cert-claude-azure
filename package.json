@@ -1,0 +1,28 @@
+{
+  "name": "cca-exam-simulator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Live, scenario-based practice-exam simulator for the Claude Certified Architect (CCA) Foundations exam. Bring your own Anthropic API key.",
+  "license": "MIT",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "lint": "next lint",
+    "test": "node scripts/test.mjs"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.104.1",
+    "next": "^15.5.19",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.3",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "eslint": "^9.39.4",
+    "eslint-config-next": "^15.5.19",
+    "typescript": "^6.0.3"
+  }
+}
