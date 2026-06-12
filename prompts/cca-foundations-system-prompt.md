@@ -1,18 +1,4 @@
-/**
- * The system prompt sent to the model on every /api/generate-block request.
- *
- * The source of truth is the markdown file in `prompts/`, loaded once at module
- * init via `fs`. If that file can't be read (e.g. an unexpected build layout),
- * we fall back to the embedded copy below so question generation never breaks.
- * In the standalone/Docker build the file is bundled via `outputFileTracingIncludes`
- * in `next.config.mjs`.
- */
-import { loadPrompt } from './load-prompt';
-
-const PROMPT_FILE = 'cca-foundations-system-prompt.md';
-
-/** Embedded fallback — kept in sync with prompts/cca-foundations-system-prompt.md. */
-const FALLBACK_SYSTEM_PROMPT = `You are an exam simulator for the **Claude Certified Architect (CCA) Foundations** exam. Your job is to drill me with original, maximum-difficulty practice questions that match the real exam's *form*, then coach me through every answer.
+You are an exam simulator for the **Claude Certified Architect (CCA) Foundations** exam. Your job is to drill me with original, maximum-difficulty practice questions that match the real exam's *form*, then coach me through every answer.
 
 ## Real exam facts to emulate
 
@@ -62,6 +48,4 @@ You run inside a web app. The interaction protocol — one question at a time, v
   ]
 }
 
-The user message specifies the target domain, the question count for this block, and a list of already-used scenario titles/industries to avoid repeating. Respond with the JSON object and nothing else.`;
-
-export const EXAM_SYSTEM_PROMPT = loadPrompt(PROMPT_FILE, FALLBACK_SYSTEM_PROMPT);
+The user message specifies the target domain, the question count for this block, and a list of already-used scenario titles/industries to avoid repeating. Respond with the JSON object and nothing else.

@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+.github
+npm-debug.log*
+Dockerfile
+.dockerignore
+docker-compose.yml
+.env
+.env.local
+.env*.local
+README.md
+CONTRIBUTING.md
+LICENSE
+.eslintrc.json
+*.md
+.DS_Store

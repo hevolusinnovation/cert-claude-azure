@@ -3,20 +3,38 @@
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { DOMAINS, SINGLE_DOMAIN_QUESTIONS } from '@/lib/domains';
-import { STORAGE_KEY } from '@/lib/storage';
 import type { DomainCode } from '@/lib/types';
 
 export default function StartControls() {
   const router = useRouter();
   const [domain, setDomain] = useState<DomainCode>(DOMAINS[0].code);
+  const [busy, setBusy] = useState<'full' | 'domain' | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  const start = (path: string) => {
+  const start = async (mode: 'full' | 'domain') => {
+    setBusy(mode);
+    setError(null);
     try {
-      localStorage.removeItem(STORAGE_KEY);
+      const res = await fetch('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(mode === 'full' ? { mode } : { mode, domain }),
+      });
+      const data = await res.json().catch(() => ({}) as Record<string, unknown>);
+      if (res.status === 401) {
+        router.push('/login?next=/profile');
+        return;
+      }
+      if (!res.ok || !data.id) {
+        setError((data.error as string) || 'Could not start the exam. Try again.');
+        return;
+      }
+      router.push(`/exam?session=${data.id}`);
     } catch {
-      // ignore — a missing localStorage just means no resume state to clear
+      setError('Network error. Check your connection and try again.');
+    } finally {
+      setBusy(null);
     }
-    router.push(path);
   };
 
   return (
@@ -27,8 +45,8 @@ export default function StartControls() {
           60 questions across all five domains (weighted toward Domain 1), with a 120-minute
           countdown.
         </p>
-        <button className="btn" onClick={() => start('/exam?mode=full')}>
-          Start full mock
+        <button className="btn" onClick={() => start('full')} disabled={busy !== null} type="button">
+          {busy === 'full' ? 'Starting…' : 'Start full mock'}
         </button>
       </div>
 
@@ -55,11 +73,15 @@ export default function StartControls() {
         </select>
         <button
           className="btn btn-secondary"
-          onClick={() => start(`/exam?mode=domain&domain=${domain}`)}
+          onClick={() => start('domain')}
+          disabled={busy !== null}
+          type="button"
         >
-          Start domain set
+          {busy === 'domain' ? 'Starting…' : 'Start domain set'}
         </button>
       </div>
+
+      {error && <p className="auth-error start-error">{error}</p>}
     </div>
   );
 }

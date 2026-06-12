@@ -1,0 +1,47 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: cca-exam-simulator:latest
+    container_name: cca-exam-simulator
+    ports:
+      - "3000:3000"
+    environment:
+      # Provide your Anthropic key via a local .env file (never committed).
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - ANTHROPIC_MODEL=${ANTHROPIC_MODEL:-claude-sonnet-4-6}
+      # Auth secret for signing session cookies (set a strong value in .env.local).
+      - AUTH_SECRET=${AUTH_SECRET:-dev-insecure-secret-change-me}
+      # Connect to the bundled Postgres service below.
+      - DATABASE_URL=${DATABASE_URL:-postgres://cca:cca@db:5432/cca}
+      - NODE_ENV=production
+    env_file:
+      - path: .env.local
+        required: false
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  db:
+    image: postgres:16-alpine
+    container_name: cca-exam-db
+    environment:
+      - POSTGRES_USER=cca
+      - POSTGRES_PASSWORD=cca
+      - POSTGRES_DB=cca
+    # Expose locally so `make dev` can also reach it on 5432.
+    ports:
+      - "5432:5432"
+    volumes:
+      - cca-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cca -d cca"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  cca-pgdata:
