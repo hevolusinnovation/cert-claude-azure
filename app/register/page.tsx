@@ -1,15 +1,9 @@
-import { Suspense } from 'react';
 import { redirect } from 'next/navigation';
-import AuthForm from '@/components/AuthForm';
-import { currentUserId } from '@/lib/auth';
 
 export const dynamic = 'force-dynamic';
 
-export default async function RegisterPage() {
-  if (await currentUserId()) redirect('/profile');
-  return (
-    <Suspense>
-      <AuthForm mode="register" />
-    </Suspense>
-  );
+// Self-service registration is disabled: accounts come from Microsoft Entra
+// (the Hevolus tenant). Any visit here is sent to the single sign-in entry.
+export default function RegisterPage() {
+  redirect('/login');
 }

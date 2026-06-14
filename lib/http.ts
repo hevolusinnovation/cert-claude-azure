@@ -12,8 +12,7 @@ export function errorResponse(err: unknown) {
   if (err instanceof DbNotConfiguredError) {
     return json(
       {
-        error:
-          'DATABASE_URL is not configured on the server. Start Postgres (docker compose up) and set DATABASE_URL.',
+        error: 'The database (COSMOS_ENDPOINT) is not configured on the server.',
         code: 'DB_NOT_CONFIGURED',
       },
       503,
@@ -21,9 +20,4 @@ export function errorResponse(err: unknown) {
   }
   console.error('[api] Unexpected error', err);
   return json({ error: 'Unexpected server error.', code: 'INTERNAL' }, 500);
-}
-
-/** True if a thrown DB error is a unique-constraint violation. */
-export function isUniqueViolation(err: unknown): boolean {
-  return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
 }

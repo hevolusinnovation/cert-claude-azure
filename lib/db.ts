@@ -1,119 +1,71 @@
 /**
- * Postgres access layer. A single shared pool per server process, plus an
- * idempotent schema bootstrap that runs once on first use — so the app works
- * both under docker-compose (Postgres service) and with a locally-run Postgres
- * during `make dev`, with no separate migration step.
+ * Azure Cosmos DB (NoSQL/Core API) access layer.
+ *
+ * A single shared CosmosClient per server process, authenticated with Microsoft
+ * Entra (AAD) — no account keys. In Azure the container's user-assigned managed
+ * identity is selected via AZURE_CLIENT_ID; locally DefaultAzureCredential falls
+ * back to the Azure CLI login. The account has local auth disabled, so AAD is
+ * the only path.
+ *
+ * The database and its containers are provisioned out-of-band (control plane),
+ * so there is no schema bootstrap here — the app only reads/writes items.
  *
  * Server-only: never import this from a client component.
  */
 import 'server-only';
-import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import { type Container, CosmosClient, type Database } from '@azure/cosmos';
+import { DefaultAzureCredential } from '@azure/identity';
 
-let pool: Pool | null = null;
-let schemaReady: Promise<void> | null = null;
+/** Logical container names within the database. */
+export const CONTAINERS = {
+  users: 'users',
+  sessions: 'sessions',
+  blocks: 'blocks',
+} as const;
 
-export function getDatabaseUrl(): string | null {
-  const url = process.env.DATABASE_URL;
-  return url && url.trim() ? url.trim() : null;
+let client: CosmosClient | null = null;
+let database: Database | null = null;
+
+export function getCosmosEndpoint(): string | null {
+  const v = process.env.COSMOS_ENDPOINT;
+  return v && v.trim() ? v.trim() : null;
 }
 
-/** Thrown when the server has no DATABASE_URL configured. */
+function getDatabaseName(): string {
+  return process.env.COSMOS_DATABASE?.trim() || 'cca';
+}
+
+/** Thrown when the server has no Cosmos endpoint configured. */
 export class DbNotConfiguredError extends Error {
   constructor() {
-    super('DATABASE_URL is not configured on the server.');
+    super('COSMOS_ENDPOINT is not configured on the server.');
     this.name = 'DbNotConfiguredError';
   }
 }
 
-function getPool(): Pool {
-  const url = getDatabaseUrl();
-  if (!url) throw new DbNotConfiguredError();
-  if (!pool) {
-    pool = new Pool({ connectionString: url, max: 10 });
-    pool.on('error', (err) => console.error('[db] idle client error', err));
+function getDatabase(): Database {
+  const endpoint = getCosmosEndpoint();
+  if (!endpoint) throw new DbNotConfiguredError();
+  if (!database) {
+    // AZURE_CLIENT_ID (when set) pins DefaultAzureCredential to the app's
+    // user-assigned managed identity; otherwise it uses the local az login.
+    client = new CosmosClient({ endpoint, aadCredentials: new DefaultAzureCredential() });
+    database = client.database(getDatabaseName());
   }
-  return pool;
+  return database;
 }
 
-const SCHEMA = `
-CREATE TABLE IF NOT EXISTS users (
-  id            uuid PRIMARY KEY,
-  username      text UNIQUE NOT NULL,
-  password_hash text NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS exam_sessions (
-  id            uuid PRIMARY KEY,
-  user_id       uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  mode          text NOT NULL CHECK (mode IN ('full','domain')),
-  single_domain text,
-  plan          jsonb NOT NULL,
-  block_idx     int NOT NULL DEFAULT 0,
-  q_idx         int NOT NULL DEFAULT 0,
-  answers       jsonb NOT NULL DEFAULT '{}'::jsonb,
-  started_at    bigint NOT NULL DEFAULT 0,
-  finished      boolean NOT NULL DEFAULT false,
-  score_correct int,
-  score_total   int,
-  score_per_domain jsonb,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  updated_at    timestamptz NOT NULL DEFAULT now()
-);
-
-CREATE TABLE IF NOT EXISTS exam_blocks (
-  session_id    uuid NOT NULL REFERENCES exam_sessions(id) ON DELETE CASCADE,
-  block_index   int NOT NULL,
-  domain        text NOT NULL,
-  payload       jsonb NOT NULL,
-  created_at    timestamptz NOT NULL DEFAULT now(),
-  PRIMARY KEY (session_id, block_index)
-);
-
-CREATE INDEX IF NOT EXISTS exam_sessions_user_idx
-  ON exam_sessions (user_id, updated_at DESC);
-`;
-
-/** Ensures the schema exists exactly once per process. */
-export function ensureSchema(): Promise<void> {
-  if (!schemaReady) {
-    schemaReady = getPool()
-      .query(SCHEMA)
-      .then(() => {
-        console.info('[db] Schema ready.');
-      })
-      .catch((err) => {
-        // Reset so a later request can retry (e.g. DB started after the app).
-        schemaReady = null;
-        throw err;
-      });
-  }
-  return schemaReady;
+/** Returns a container client by logical name. */
+export function getContainer(name: (typeof CONTAINERS)[keyof typeof CONTAINERS]): Container {
+  return getDatabase().container(name);
 }
 
-/** Run a parameterized query, ensuring the schema exists first. */
-export async function query<T extends QueryResultRow = QueryResultRow>(
-  text: string,
-  params: unknown[] = [],
-): Promise<T[]> {
-  await ensureSchema();
-  const res = await getPool().query<T>(text, params as never[]);
-  return res.rows;
+/** True if a thrown Cosmos error is a 404 (not found). */
+export function isNotFound(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: number }).code === 404;
 }
 
-/** Run several statements in a single transaction. */
-export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
-  await ensureSchema();
-  const client = await getPool().connect();
-  try {
-    await client.query('BEGIN');
-    const result = await fn(client);
-    await client.query('COMMIT');
-    return result;
-  } catch (err) {
-    await client.query('ROLLBACK').catch(() => {});
-    throw err;
-  } finally {
-    client.release();
-  }
+/** True if a thrown Cosmos error is a 409 (conflict / already exists). */
+export function isConflict(err: unknown): boolean {
+  return typeof err === 'object' && err !== null && (err as { code?: number }).code === 409;
 }

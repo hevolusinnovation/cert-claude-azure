@@ -1,37 +1,33 @@
-/** User persistence. Server-only. */
+/** User persistence (Cosmos DB). Server-only. */
 import 'server-only';
-import { newUserId } from './auth';
-import { query } from './db';
+import { CONTAINERS, getContainer, isNotFound } from './db';
 import type { User } from './types';
 
-interface UserRow {
+interface UserDoc {
   id: string;
   username: string;
-  password_hash: string;
 }
 
-/** Creates a user. Throws on duplicate username (Postgres unique violation 23505). */
-export async function createUser(username: string, passwordHash: string): Promise<User> {
-  const id = newUserId();
-  await query(
-    'INSERT INTO users (id, username, password_hash) VALUES ($1, $2, $3)',
-    [id, username, passwordHash],
-  );
-  return { id, username };
-}
-
-export async function findUserByUsername(
-  username: string,
-): Promise<{ id: string; username: string; passwordHash: string } | null> {
-  const rows = await query<UserRow>(
-    'SELECT id, username, password_hash FROM users WHERE lower(username) = lower($1) LIMIT 1',
-    [username],
-  );
-  if (!rows[0]) return null;
-  return { id: rows[0].id, username: rows[0].username, passwordHash: rows[0].password_hash };
+/**
+ * Creates or updates a user from a Microsoft Entra identity. Keyed by the Entra
+ * object id (a GUID), which doubles as the app user id and the partition key.
+ * The username (UPN / email) is refreshed on every login. There is no password:
+ * sign-in only ever happens through Entra.
+ */
+export async function upsertEntraUser(oid: string, username: string): Promise<User> {
+  const { resource } = await getContainer(CONTAINERS.users).items.upsert<UserDoc>({
+    id: oid,
+    username,
+  });
+  return { id: resource!.id, username: resource!.username };
 }
 
 export async function findUserById(id: string): Promise<User | null> {
-  const rows = await query<UserRow>('SELECT id, username FROM users WHERE id = $1 LIMIT 1', [id]);
-  return rows[0] ? { id: rows[0].id, username: rows[0].username } : null;
+  try {
+    const { resource } = await getContainer(CONTAINERS.users).item(id, id).read<UserDoc>();
+    return resource ? { id: resource.id, username: resource.username } : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
 }

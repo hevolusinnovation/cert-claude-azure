@@ -1,7 +1,7 @@
-/** Exam-session and generated-block persistence. Server-only. */
+/** Exam-session and generated-block persistence (Cosmos DB). Server-only. */
 import 'server-only';
 import { randomUUID } from 'node:crypto';
-import { query } from './db';
+import { CONTAINERS, getContainer, isConflict, isNotFound } from './db';
 import type {
   BlockPlanItem,
   DomainBlock,
@@ -24,25 +24,46 @@ function scaled(correct: number, total: number): number {
   return Math.round(SCALE_MIN + (correct / total) * (SCALE_MAX - SCALE_MIN));
 }
 
-interface SessionRow {
+/** A session document — `userId` is the partition key. */
+interface SessionDoc {
   id: string;
-  user_id: string;
+  userId: string;
   mode: ExamMode;
-  single_domain: DomainCode | null;
+  singleDomain: DomainCode | null;
   plan: BlockPlanItem[];
-  block_idx: number;
-  q_idx: number;
+  blockIdx: number;
+  qIdx: number;
   answers: Record<string, OptionKey>;
-  started_at: string; // bigint comes back as string
+  startedAt: number;
   finished: boolean;
-  score_correct: number | null;
-  score_total: number | null;
+  scoreCorrect: number | null;
+  scoreTotal: number | null;
+  scorePerDomain: DomainScoreSnapshot | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
-interface BlockRow {
-  block_index: number;
+/** A generated block — `sessionId` is the partition key, `id` is the index. */
+interface BlockDoc {
+  id: string;
+  sessionId: string;
+  blockIndex: number;
   domain: DomainCode;
   payload: ExamBlock;
+}
+
+const sessions = () => getContainer(CONTAINERS.sessions);
+const blocks = () => getContainer(CONTAINERS.blocks);
+
+/** Reads a session owned by userId (partition key), or null if missing. */
+async function getSessionDoc(id: string, userId: string): Promise<SessionDoc | null> {
+  try {
+    const { resource } = await sessions().item(id, userId).read<SessionDoc>();
+    return resource ?? null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
 }
 
 export async function createSession(
@@ -52,52 +73,58 @@ export async function createSession(
   plan: BlockPlanItem[],
 ): Promise<string> {
   const id = randomUUID();
-  await query(
-    `INSERT INTO exam_sessions (id, user_id, mode, single_domain, plan)
-     VALUES ($1, $2, $3, $4, $5)`,
-    [id, userId, mode, singleDomain, JSON.stringify(plan)],
-  );
+  const now = new Date().toISOString();
+  const doc: SessionDoc = {
+    id,
+    userId,
+    mode,
+    singleDomain,
+    plan,
+    blockIdx: 0,
+    qIdx: 0,
+    answers: {},
+    startedAt: 0,
+    finished: false,
+    scoreCorrect: null,
+    scoreTotal: null,
+    scorePerDomain: null,
+    createdAt: now,
+    updatedAt: now,
+  };
+  await sessions().items.create(doc);
   return id;
-}
-
-/** Loads a session owned by userId (or null if missing / not owned). */
-async function getSessionRow(id: string, userId: string): Promise<SessionRow | null> {
-  const rows = await query<SessionRow>(
-    `SELECT id, user_id, mode, single_domain, plan, block_idx, q_idx, answers,
-            started_at, finished, score_correct, score_total
-       FROM exam_sessions WHERE id = $1 AND user_id = $2 LIMIT 1`,
-    [id, userId],
-  );
-  return rows[0] ?? null;
 }
 
 /** Full state for the runner: session fields + blocks aligned 1:1 with the plan. */
 export async function getSessionState(id: string, userId: string): Promise<ExamState | null> {
-  const row = await getSessionRow(id, userId);
-  if (!row) return null;
+  const doc = await getSessionDoc(id, userId);
+  if (!doc) return null;
 
-  const blockRows = await query<BlockRow>(
-    'SELECT block_index, domain, payload FROM exam_blocks WHERE session_id = $1',
-    [id],
-  );
-  const blocks: (DomainBlock | null)[] = row.plan.map(() => null);
-  for (const b of blockRows) {
-    if (b.block_index >= 0 && b.block_index < blocks.length) {
-      blocks[b.block_index] = { ...b.payload, domain: b.domain };
+  const { resources } = await blocks()
+    .items.query<BlockDoc>(
+      { query: 'SELECT * FROM c WHERE c.sessionId = @sid', parameters: [{ name: '@sid', value: id }] },
+      { partitionKey: id },
+    )
+    .fetchAll();
+
+  const aligned: (DomainBlock | null)[] = doc.plan.map(() => null);
+  for (const b of resources) {
+    if (b.blockIndex >= 0 && b.blockIndex < aligned.length) {
+      aligned[b.blockIndex] = { ...b.payload, domain: b.domain };
     }
   }
 
   return {
-    id: row.id,
-    mode: row.mode,
-    singleDomain: row.single_domain,
-    plan: row.plan,
-    blocks,
-    blockIdx: row.block_idx,
-    qIdx: row.q_idx,
-    answers: row.answers ?? {},
-    startedAt: Number(row.started_at),
-    finished: row.finished,
+    id: doc.id,
+    mode: doc.mode,
+    singleDomain: doc.singleDomain,
+    plan: doc.plan,
+    blocks: aligned,
+    blockIdx: doc.blockIdx,
+    qIdx: doc.qIdx,
+    answers: doc.answers ?? {},
+    startedAt: Number(doc.startedAt),
+    finished: doc.finished,
   };
 }
 
@@ -118,49 +145,46 @@ export async function updateSessionProgress(
   userId: string,
   u: SessionProgressUpdate,
 ): Promise<boolean> {
-  const rows = await query<{ id: string }>(
-    `UPDATE exam_sessions
-        SET block_idx = $3, q_idx = $4, answers = $5, started_at = $6, finished = $7,
-            score_correct = $8, score_total = $9, score_per_domain = $10, updated_at = now()
-      WHERE id = $1 AND user_id = $2
-      RETURNING id`,
-    [
-      id,
-      userId,
-      u.blockIdx,
-      u.qIdx,
-      JSON.stringify(u.answers ?? {}),
-      u.startedAt,
-      u.finished,
-      u.scoreCorrect ?? null,
-      u.scoreTotal ?? null,
-      u.scorePerDomain ? JSON.stringify(u.scorePerDomain) : null,
-    ],
-  );
-  return rows.length > 0;
+  const doc = await getSessionDoc(id, userId);
+  if (!doc) return false;
+
+  const updated: SessionDoc = {
+    ...doc,
+    blockIdx: u.blockIdx,
+    qIdx: u.qIdx,
+    answers: u.answers ?? {},
+    startedAt: u.startedAt,
+    finished: u.finished,
+    scoreCorrect: u.scoreCorrect ?? null,
+    scoreTotal: u.scoreTotal ?? null,
+    scorePerDomain: u.scorePerDomain ?? null,
+    updatedAt: new Date().toISOString(),
+  };
+  await sessions().item(id, userId).replace(updated);
+  return true;
+}
+
+/** All of a user's sessions (single-partition query). */
+async function listSessionDocs(userId: string): Promise<SessionDoc[]> {
+  const { resources } = await sessions()
+    .items.query<SessionDoc>(
+      { query: 'SELECT * FROM c WHERE c.userId = @uid', parameters: [{ name: '@uid', value: userId }] },
+      { partitionKey: userId },
+    )
+    .fetchAll();
+  return resources;
 }
 
 /** Aggregated performance stats over a user's finished exams. */
 export async function getUserStats(userId: string): Promise<UserStats> {
-  const rows = await query<{
-    id: string;
-    finished: boolean;
-    score_correct: number | null;
-    score_total: number | null;
-    score_per_domain: DomainScoreSnapshot | null;
-    updated_at: Date;
-  }>(
-    `SELECT id, finished, score_correct, score_total, score_per_domain, updated_at
-       FROM exam_sessions WHERE user_id = $1`,
-    [userId],
-  );
+  const rows = await listSessionDocs(userId);
 
-  const finished = rows.filter((r) => r.finished && r.score_total && r.score_total > 0);
-  const scaledScores = finished.map((r) => scaled(r.score_correct ?? 0, r.score_total ?? 0));
+  const finished = rows.filter((r) => r.finished && r.scoreTotal && r.scoreTotal > 0);
+  const scaledScores = finished.map((r) => scaled(r.scoreCorrect ?? 0, r.scoreTotal ?? 0));
 
   const perDomain: UserStats['perDomain'] = {};
   for (const r of finished) {
-    const snap = r.score_per_domain ?? {};
+    const snap = r.scorePerDomain ?? {};
     for (const [code, s] of Object.entries(snap)) {
       if (!s) continue;
       const d = code as DomainCode;
@@ -172,12 +196,12 @@ export async function getUserStats(userId: string): Promise<UserStats> {
   }
 
   const trend = [...finished]
-    .sort((a, b) => new Date(a.updated_at).getTime() - new Date(b.updated_at).getTime())
+    .sort((a, b) => new Date(a.updatedAt).getTime() - new Date(b.updatedAt).getTime())
     .slice(-20)
     .map((r) => ({
       id: r.id,
-      scaled: scaled(r.score_correct ?? 0, r.score_total ?? 0),
-      finishedAt: new Date(r.updated_at).toISOString(),
+      scaled: scaled(r.scoreCorrect ?? 0, r.scoreTotal ?? 0),
+      finishedAt: new Date(r.updatedAt).toISOString(),
     }));
 
   return {
@@ -194,36 +218,21 @@ export async function getUserStats(userId: string): Promise<UserStats> {
 }
 
 export async function listSessions(userId: string): Promise<SessionSummary[]> {
-  const rows = await query<{
-    id: string;
-    mode: ExamMode;
-    single_domain: DomainCode | null;
-    plan: BlockPlanItem[];
-    answers: Record<string, OptionKey>;
-    finished: boolean;
-    score_correct: number | null;
-    score_total: number | null;
-    created_at: Date;
-    updated_at: Date;
-  }>(
-    `SELECT id, mode, single_domain, plan, answers, finished,
-            score_correct, score_total, created_at, updated_at
-       FROM exam_sessions WHERE user_id = $1 ORDER BY updated_at DESC`,
-    [userId],
-  );
-
-  return rows.map((r) => ({
-    id: r.id,
-    mode: r.mode,
-    singleDomain: r.single_domain,
-    plannedTotal: r.plan.reduce((acc, p) => acc + p.count, 0),
-    answered: Object.keys(r.answers ?? {}).length,
-    finished: r.finished,
-    scoreCorrect: r.score_correct,
-    scoreTotal: r.score_total,
-    createdAt: new Date(r.created_at).toISOString(),
-    updatedAt: new Date(r.updated_at).toISOString(),
-  }));
+  const rows = await listSessionDocs(userId);
+  return rows
+    .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+    .map((r) => ({
+      id: r.id,
+      mode: r.mode,
+      singleDomain: r.singleDomain,
+      plannedTotal: r.plan.reduce((acc, p) => acc + p.count, 0),
+      answered: Object.keys(r.answers ?? {}).length,
+      finished: r.finished,
+      scoreCorrect: r.scoreCorrect,
+      scoreTotal: r.scoreTotal,
+      createdAt: new Date(r.createdAt).toISOString(),
+      updatedAt: new Date(r.updatedAt).toISOString(),
+    }));
 }
 
 /** The plan item (domain + count) for a given block index, if in range. */
@@ -232,26 +241,30 @@ export async function getSessionPlanItem(
   userId: string,
   index: number,
 ): Promise<BlockPlanItem | null> {
-  const row = await getSessionRow(id, userId);
-  if (!row) return null;
-  return row.plan[index] ?? null;
+  const doc = await getSessionDoc(id, userId);
+  if (!doc) return null;
+  return doc.plan[index] ?? null;
 }
 
 export async function getStoredBlock(id: string, index: number): Promise<DomainBlock | null> {
-  const rows = await query<BlockRow>(
-    'SELECT block_index, domain, payload FROM exam_blocks WHERE session_id = $1 AND block_index = $2 LIMIT 1',
-    [id, index],
-  );
-  return rows[0] ? { ...rows[0].payload, domain: rows[0].domain } : null;
+  try {
+    const { resource } = await blocks().item(String(index), id).read<BlockDoc>();
+    return resource ? { ...resource.payload, domain: resource.domain } : null;
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
 }
 
 /** Scenario titles already generated in this session, to avoid repeats. */
 export async function listBlockTitles(id: string): Promise<string[]> {
-  const rows = await query<{ title: string }>(
-    `SELECT payload->>'scenario_title' AS title FROM exam_blocks WHERE session_id = $1`,
-    [id],
-  );
-  return rows.map((r) => r.title).filter((t): t is string => Boolean(t));
+  const { resources } = await blocks()
+    .items.query<BlockDoc>(
+      { query: 'SELECT * FROM c WHERE c.sessionId = @sid', parameters: [{ name: '@sid', value: id }] },
+      { partitionKey: id },
+    )
+    .fetchAll();
+  return resources.map((b) => b.payload?.scenario_title).filter((t): t is string => Boolean(t));
 }
 
 /** Stores a generated block. Idempotent: a re-generated index is ignored. */
@@ -261,10 +274,11 @@ export async function saveBlock(
   domain: DomainCode,
   block: ExamBlock,
 ): Promise<void> {
-  await query(
-    `INSERT INTO exam_blocks (session_id, block_index, domain, payload)
-     VALUES ($1, $2, $3, $4)
-     ON CONFLICT (session_id, block_index) DO NOTHING`,
-    [id, index, domain, JSON.stringify(block)],
-  );
+  const doc: BlockDoc = { id: String(index), sessionId: id, blockIndex: index, domain, payload: block };
+  try {
+    await blocks().items.create(doc);
+  } catch (err) {
+    if (isConflict(err)) return; // already generated — leave the original
+    throw err;
+  }
 }
