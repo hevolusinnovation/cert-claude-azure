@@ -38,6 +38,15 @@ export function getEntraConfig(): EntraConfig | null {
   return { tenantId, clientId, clientSecret, redirectUri };
 }
 
+/**
+ * The app's public origin (scheme + host), derived from the configured redirect
+ * URI. Behind the Container Apps ingress the request host is the internal
+ * 0.0.0.0:3000, so we must not build self-redirects from req.nextUrl.origin.
+ */
+export function getAppBaseUrl(cfg: EntraConfig): string {
+  return new URL(cfg.redirectUri).origin;
+}
+
 let cca: ConfidentialClientApplication | null = null;
 
 function getClient(cfg: EntraConfig): ConfidentialClientApplication {
