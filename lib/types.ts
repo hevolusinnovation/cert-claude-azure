@@ -6,6 +6,15 @@ export interface Question {
   options: Record<OptionKey, string>;
   correct: OptionKey;
   explanations: Record<OptionKey, string>;
+  /**
+   * Short tag (≤8 words) naming the notion this question tests, e.g.
+   * "verification gate placement" or "prompt-cache prefix invalidation". Fed
+   * back into later generations as the primary no-repeat signal — the same
+   * notion can hide under a fresh scenario title, so deduping on concept is
+   * stronger than on title or stem. Optional: blocks stored before this field
+   * existed simply contribute none.
+   */
+  concept?: string;
 }
 
 /** A scenario block as authored by the model (no domain attached yet). */
@@ -23,6 +32,18 @@ export interface DomainBlock extends ExamBlock {
 export interface BlockPlanItem {
   domain: DomainCode;
   count: number;
+}
+
+/**
+ * What's already been generated in a session, fed back to the model so it
+ * avoids repeating itself. `titles` keeps scenarios distinct; `stems` keeps the
+ * underlying notion distinct (the stronger lever — the same concept can hide
+ * under a fresh scenario title, even across domains).
+ */
+export interface GenerationHistory {
+  titles: string[];
+  stems: string[];
+  concepts: string[];
 }
 
 export type ExamMode = 'full' | 'domain';

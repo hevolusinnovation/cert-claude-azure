@@ -3,7 +3,7 @@ import { GenerationError, generateBlock, getApiKey } from '@/lib/anthropic';
 import { currentUserId } from '@/lib/auth';
 import { errorResponse, json } from '@/lib/http';
 import { rateLimit } from '@/lib/rate-limit';
-import { getSessionPlanItem, getStoredBlock, listBlockTitles, saveBlock } from '@/lib/sessions';
+import { getSessionPlanItem, getStoredBlock, listSessionHistory, saveBlock } from '@/lib/sessions';
 import type { DomainCode } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -70,12 +70,12 @@ export async function GET(req: NextRequest, { params }: Params) {
       );
     }
 
-    const usedTitles = await listBlockTitles(id);
+    const history = await listSessionHistory(id);
     console.info(
       `[block] Generating { session: '${id}', index: ${index}, domain: '${item.domain}', count: ${item.count} } — this can take a while on Opus…`,
     );
     const startedAt = Date.now();
-    const block = await generateBlock(item.domain as DomainCode, item.count, usedTitles);
+    const block = await generateBlock(item.domain as DomainCode, item.count, history);
     await saveBlock(id, index, item.domain as DomainCode, block);
     console.info(
       `[block] Generated & saved { session: '${id}', index: ${index}, questions: ${block.questions.length}, ms: ${Date.now() - startedAt} }`,

@@ -40,7 +40,7 @@ function validateQuestion(q: unknown, i: number): Question {
   if (!isObject(q)) {
     throw new Error(`Question ${i} is not an object`);
   }
-  const { stem, options, correct, explanations } = q;
+  const { stem, options, correct, explanations, concept } = q;
 
   if (typeof stem !== 'string' || !stem.trim()) {
     throw new Error(`Question ${i} is missing a stem`);
@@ -55,6 +55,10 @@ function validateQuestion(q: unknown, i: number): Question {
     options: opts,
     correct: correct as OptionKey,
     explanations: expl,
+    // Lenient: the schema asks for it, but a free-form (structured-output-off)
+    // response that omits it shouldn't fail validation — it just won't feed the
+    // concept-level no-repeat signal for this question.
+    ...(typeof concept === 'string' && concept.trim() ? { concept: concept.trim() } : {}),
   };
 }
 

@@ -3,7 +3,7 @@ import { domainBrief } from './domain-briefs';
 import { DOMAIN_CODES, DOMAIN_MAP } from './domains';
 import { EXAM_SYSTEM_PROMPT } from './exam-prompt';
 import { extractJson } from './json-extract';
-import type { DomainCode, ExamBlock } from './types';
+import type { DomainCode, ExamBlock, GenerationHistory } from './types';
 import { validateBlock } from './validate';
 
 const DEFAULT_MODEL = 'claude-sonnet-4-6';
@@ -75,8 +75,11 @@ const BLOCK_SCHEMA = {
           options: OPTIONS_SCHEMA,
           correct: { type: 'string', enum: ['A', 'B', 'C', 'D'] },
           explanations: OPTIONS_SCHEMA,
+          // A short tag (≤8 words) naming the notion under test, used purely as
+          // the no-repeat signal fed into later generations (see buildUserMessage).
+          concept: { type: 'string' },
         },
-        required: ['stem', 'options', 'correct', 'explanations'],
+        required: ['stem', 'options', 'correct', 'explanations', 'concept'],
       },
     },
   },
@@ -101,9 +104,21 @@ export function getApiKey(): string | null {
   return key && key.trim() ? key.trim() : null;
 }
 
-function buildUserMessage(domain: DomainCode, count: number, usedTitles: string[]): string {
+/** Trim a stem to one line so the avoid-list stays compact for long sessions. */
+function summarizeStem(stem: string): string {
+  const flat = stem.replace(/\s+/g, ' ').trim();
+  return flat.length > 160 ? `${flat.slice(0, 157)}…` : flat;
+}
+
+function buildUserMessage(domain: DomainCode, count: number, history: GenerationHistory): string {
   const info = DOMAIN_MAP[domain];
-  const avoid = usedTitles.length ? usedTitles.map((t) => `- ${t}`).join('\n') : '(none yet)';
+  const avoid = history.titles.length ? history.titles.map((t) => `- ${t}`).join('\n') : '(none yet)';
+  const askedBefore = history.stems.length
+    ? history.stems.map((s) => `- ${summarizeStem(s)}`).join('\n')
+    : '(none yet)';
+  const coveredConcepts = history.concepts.length
+    ? history.concepts.map((c) => `- ${c}`).join('\n')
+    : '(none yet)';
   // Enumerate the OTHER four domains so the model has a concrete out-of-scope
   // list, not just a vague "don't drift". Most cross-domain leakage is a
   // question tagged for this domain whose actual decision belongs to one of
@@ -118,6 +133,12 @@ function buildUserMessage(domain: DomainCode, count: number, usedTitles: string[
     `Questions in this block: ${count}`,
     `Already-used scenario titles/industries to avoid repeating:`,
     avoid,
+    ``,
+    `Concepts ALREADY TESTED in this exam (across all domains) — pick a notion NOT in this list:`,
+    coveredConcepts,
+    `Questions ALREADY ASKED in this exam (across all domains) — these stems are already covered:`,
+    askedBefore,
+    `STRICT NO-REPEAT: the new question MUST test a DIFFERENT notion from every concept and stem above. Do not restate, rephrase, or re-skin any of them — not the same decision under a new scenario title, not the same correct mechanism with reworded options. If your draft's core decision matches one already covered, discard it and pick a different ${info.name} mechanism. Vary the scenario, the tested concept, and the trap. In your output, set "concept" to a short (≤8 words) tag naming the single notion THIS question tests, distinct from every concept listed above.`,
     ``,
     // Keep output tight: generation time scales directly with characters
     // produced, and verbose explanations are the bulk of it.
@@ -141,7 +162,7 @@ function buildUserMessage(domain: DomainCode, count: number, usedTitles: string[
 export async function generateBlock(
   domain: DomainCode,
   count: number,
-  usedTitles: string[],
+  history: GenerationHistory,
   onText?: (delta: string) => void,
 ): Promise<ExamBlock> {
   const apiKey = getApiKey();
@@ -155,7 +176,7 @@ export async function generateBlock(
   // We control retries ourselves; the SDK's default (2) would re-run a slow
   // request on timeout and stack the waits, which is what caused the long hang.
   const client = new Anthropic({ apiKey, maxRetries: 0 });
-  const userMessage = buildUserMessage(domain, count, usedTitles);
+  const userMessage = buildUserMessage(domain, count, history);
 
   log('Generating block', {
     domain,
@@ -163,7 +184,9 @@ export async function generateBlock(
     model,
     effort,
     timeoutMs: timeout,
-    usedTitles: usedTitles.length,
+    usedTitles: history.titles.length,
+    askedBefore: history.stems.length,
+    concepts: history.concepts.length,
   });
 
   let lastParseError: unknown;

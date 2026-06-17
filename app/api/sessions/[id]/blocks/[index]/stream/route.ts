@@ -3,7 +3,7 @@ import { GenerationError, generateBlock, getApiKey } from '@/lib/anthropic';
 import { currentUserId } from '@/lib/auth';
 import { json } from '@/lib/http';
 import { rateLimit } from '@/lib/rate-limit';
-import { getSessionPlanItem, getStoredBlock, listBlockTitles, saveBlock } from '@/lib/sessions';
+import { getSessionPlanItem, getStoredBlock, listSessionHistory, saveBlock } from '@/lib/sessions';
 import type { DomainCode } from '@/lib/types';
 
 export const runtime = 'nodejs';
@@ -84,11 +84,11 @@ export async function GET(req: NextRequest, { params }: Params) {
           `[block-stream] Generating { session: '${id}', index: ${index}, domain: '${item.domain}', count: ${item.count} }`,
         );
         const startedAt = Date.now();
-        const usedTitles = await listBlockTitles(id);
+        const history = await listSessionHistory(id);
         const block = await generateBlock(
           item.domain as DomainCode,
           item.count,
-          usedTitles,
+          history,
           (delta) => send('delta', { text: delta }),
         );
         // Persist regardless of whether the client is still listening, so a

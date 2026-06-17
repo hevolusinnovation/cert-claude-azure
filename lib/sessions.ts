@@ -10,6 +10,7 @@ import type {
   ExamBlock,
   ExamMode,
   ExamState,
+  GenerationHistory,
   OptionKey,
   SessionSummary,
   UserStats,
@@ -256,15 +257,24 @@ export async function getStoredBlock(id: string, index: number): Promise<DomainB
   }
 }
 
-/** Scenario titles already generated in this session, to avoid repeats. */
-export async function listBlockTitles(id: string): Promise<string[]> {
+/**
+ * Everything already generated in this session, so the next block can steer
+ * clear of it. Returns both scenario titles AND question stems: titles alone
+ * let the model reuse the same notion under a fresh title (even across
+ * domains), so we feed back the stems too and ask it to vary the concept.
+ */
+export async function listSessionHistory(id: string): Promise<GenerationHistory> {
   const { resources } = await blocks()
     .items.query<BlockDoc>(
       { query: 'SELECT * FROM c WHERE c.sessionId = @sid', parameters: [{ name: '@sid', value: id }] },
       { partitionKey: id },
     )
     .fetchAll();
-  return resources.map((b) => b.payload?.scenario_title).filter((t): t is string => Boolean(t));
+  const titles = resources.map((b) => b.payload?.scenario_title).filter((t): t is string => Boolean(t));
+  const questions = resources.flatMap((b) => b.payload?.questions ?? []);
+  const stems = questions.map((q) => q?.stem).filter((s): s is string => Boolean(s));
+  const concepts = questions.map((q) => q?.concept).filter((c): c is string => Boolean(c));
+  return { titles, stems, concepts };
 }
 
 /** Stores a generated block. Idempotent: a re-generated index is ignored. */
