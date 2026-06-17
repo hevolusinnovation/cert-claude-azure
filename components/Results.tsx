@@ -2,7 +2,51 @@
 
 import { DOMAIN_MAP } from '@/lib/domains';
 import { PASS_BAR, accuracy, computeScore, scaledScore } from '@/lib/score';
-import type { DomainCode, ExamState } from '@/lib/types';
+import type { DomainCode, ExamState, OptionKey, Question } from '@/lib/types';
+
+const OPTION_KEYS: OptionKey[] = ['A', 'B', 'C', 'D'];
+
+type Outcome = 'correct' | 'wrong' | 'unanswered';
+
+interface ReviewItem {
+  number: number;
+  domain: DomainCode;
+  scenarioTitle: string;
+  scenario: string;
+  q: Question;
+  chosen: OptionKey | undefined;
+  outcome: Outcome;
+}
+
+/**
+ * Flatten the (already-hydrated) blocks + answers into a per-question review
+ * list, numbered like the live exam. Skips not-yet-generated blocks (a session
+ * ended before later blocks streamed in) so the review never shows blanks.
+ */
+function buildReviewItems(state: ExamState): ReviewItem[] {
+  const items: ReviewItem[] = [];
+  let number = 0;
+  state.blocks.forEach((block, i) => {
+    if (!block) return;
+    const domain = (state.plan[i]?.domain ?? block.domain) as DomainCode;
+    block.questions.forEach((q, qi) => {
+      number += 1;
+      const chosen = state.answers[`${i}:${qi}`];
+      const outcome: Outcome =
+        chosen === undefined ? 'unanswered' : chosen === q.correct ? 'correct' : 'wrong';
+      items.push({
+        number,
+        domain,
+        scenarioTitle: block.scenario_title,
+        scenario: block.scenario,
+        q,
+        chosen,
+        outcome,
+      });
+    });
+  });
+  return items;
+}
 
 export default function Results({
   state,
@@ -14,6 +58,9 @@ export default function Results({
   const { total, correct, per } = computeScore(state);
   const scaled = scaledScore(correct, total);
   const passed = scaled >= PASS_BAR;
+
+  const review = buildReviewItems(state);
+  const missed = review.filter((r) => r.outcome !== 'correct').length;
 
   const answeredDomains = (Object.keys(per) as DomainCode[]).filter((d) => per[d].total > 0);
   const weakest = [...answeredDomains]
@@ -97,11 +144,87 @@ export default function Results({
         </div>
       )}
 
+      {review.length > 0 && (
+        <div className="card">
+          <h2 className="serif">Review answers</h2>
+          <p className="muted small">
+            {review.length} question{review.length === 1 ? '' : 's'} ·{' '}
+            {missed === 0 ? 'all correct' : `${missed} to review`}. Click any row to expand the
+            scenario, your answer, and the explanations.
+          </p>
+          <div className="review-list">
+            {review.map((item) => (
+              <ReviewItemRow key={item.number} item={item} />
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="actions">
         <button className="btn" onClick={onRestart}>
           Start another session
         </button>
       </div>
     </main>
+  );
+}
+
+function outcomeBadge(outcome: Outcome): { cls: string; label: string } {
+  if (outcome === 'correct') return { cls: 'pass', label: '✓ Correct' };
+  if (outcome === 'wrong') return { cls: 'fail', label: '✗ Wrong' };
+  return { cls: 'neutral', label: '— Not answered' };
+}
+
+function ReviewItemRow({ item }: { item: ReviewItem }) {
+  const { q, chosen, outcome } = item;
+  const badge = outcomeBadge(outcome);
+  return (
+    <details className="review-item">
+      <summary className="review-summary">
+        <span className="review-num">#{item.number}</span>
+        <span className="review-domain muted small">{item.domain}</span>
+        <span className={`verdict-mini ${badge.cls}`}>{badge.label}</span>
+        <span className="review-stem">{item.scenarioTitle}</span>
+      </summary>
+
+      <div className="review-body">
+        <p className="scenario-text">{item.scenario}</p>
+        <p className="stem">{q.stem}</p>
+        <div className="options">
+          {OPTION_KEYS.map((key) => {
+            const isCorrect = key === q.correct;
+            const isChosen = key === chosen;
+            let cls = 'option';
+            if (isCorrect) cls += ' option-correct';
+            else if (isChosen) cls += ' option-incorrect';
+            else cls += ' option-dim';
+            return (
+              <div key={key} className={cls}>
+                <span className="option-key">{key}</span>
+                <span className="option-text">{q.options[key]}</span>
+                {isCorrect && <span className="mark mark-correct">✓</span>}
+                {isChosen && !isCorrect && <span className="mark mark-incorrect">✗</span>}
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="explanations">
+          <div className={`verdict-line ${outcome === 'correct' ? 'pass' : 'fail'}`}>
+            {outcome === 'correct'
+              ? '✓ You answered correctly'
+              : outcome === 'wrong'
+                ? `✗ You chose ${chosen} — the best answer is ${q.correct}`
+                : `— Not answered — the best answer is ${q.correct}`}
+          </div>
+          {OPTION_KEYS.map((key) => (
+            <div key={key} className={`explanation ${key === q.correct ? 'explanation-correct' : ''}`}>
+              <span className="explanation-key">{key}</span>
+              <span>{q.explanations[key]}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </details>
   );
 }

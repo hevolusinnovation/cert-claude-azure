@@ -877,6 +877,66 @@ code {
   background: var(--incorrect-bg);
   border-color: var(--incorrect-border);
 }
+.verdict-mini.neutral {
+  color: var(--muted);
+  background: var(--panel);
+  border-color: var(--border);
+}
+
+/* --- Answer review (completed sessions) --- */
+.review-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.75rem;
+}
+.review-item {
+  border: 1px solid var(--border);
+  border-radius: 0.7rem;
+  background: var(--cream);
+  overflow: hidden;
+}
+.review-item[open] {
+  background: #fff;
+}
+.review-summary {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.7rem 0.9rem;
+  cursor: pointer;
+  list-style: none;
+  font-family: var(--sans);
+}
+.review-summary::-webkit-details-marker {
+  display: none;
+}
+.review-summary:hover {
+  background: rgba(0, 0, 0, 0.02);
+}
+.review-num {
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.review-domain {
+  flex: 0 0 auto;
+}
+.review-summary .verdict-mini {
+  flex: 0 0 auto;
+}
+.review-stem {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+.review-body {
+  padding: 0.25rem 0.9rem 1rem;
+  border-top: 1px solid var(--border);
+}
 
 /* --- AI coach --- */
 .coach-card .btn {
