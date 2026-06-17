@@ -99,7 +99,10 @@ export default function ExamRunner() {
 
   // --- Debounced autosave of progress to the server. ---
   useEffect(() => {
-    if (!state || !sessionId) return;
+    // Never persist a state that belongs to a different session than the one in
+    // the URL — otherwise a stale (e.g. finished) state could clobber another
+    // session's record on the server.
+    if (!state || !sessionId || state.id !== sessionId) return;
     const score = computeScore(state);
     const payload = {
       blockIdx: state.blockIdx,
