@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk';
-import { DOMAIN_MAP } from './domains';
+import { domainBrief } from './domain-briefs';
+import { DOMAIN_CODES, DOMAIN_MAP } from './domains';
 import { EXAM_SYSTEM_PROMPT } from './exam-prompt';
 import { extractJson } from './json-extract';
 import type { DomainCode, ExamBlock } from './types';
@@ -103,10 +104,17 @@ export function getApiKey(): string | null {
 function buildUserMessage(domain: DomainCode, count: number, usedTitles: string[]): string {
   const info = DOMAIN_MAP[domain];
   const avoid = usedTitles.length ? usedTitles.map((t) => `- ${t}`).join('\n') : '(none yet)';
+  // Enumerate the OTHER four domains so the model has a concrete out-of-scope
+  // list, not just a vague "don't drift". Most cross-domain leakage is a
+  // question tagged for this domain whose actual decision belongs to one of
+  // these — naming them is the strongest lever against that.
+  const otherDomains = DOMAIN_CODES.filter((c) => c !== domain).map((c) => `${c} (${DOMAIN_MAP[c].name})`);
   return [
     `Target domain: ${domain} — ${info.name}`,
     `Domain scope: ${info.blurb}`,
     `STRICT: the question MUST test ${info.name} specifically. The scenario and the decision being asked about must sit squarely within this domain — do not drift into another domain's topic.`,
+    `OUT OF SCOPE for this question — do NOT make the tested decision hinge on any of these: ${otherDomains.join('; ')}. They are covered by their own questions.`,
+    `DOMAIN SELF-CHECK before you answer: the single decision the candidate must make has to hinge on a ${info.name} mechanism. If the correct answer could be reached using mainly another domain's knowledge, the question is mis-targeted — rewrite it so the crux is squarely ${info.name}. The scenario may mention adjacent concepts as flavor, but the crux and the discriminating distractor must live in ${info.name}.`,
     `Questions in this block: ${count}`,
     `Already-used scenario titles/industries to avoid repeating:`,
     avoid,
@@ -184,9 +192,17 @@ export async function generateBlock(
         {
           model,
           max_tokens: maxTokens,
-          // Cache the (identical) system prompt so calls after the first skip
-          // reprocessing it — lower latency and cost per question.
-          system: [{ type: 'text', text: EXAM_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } }],
+          // Two cached system blocks. The first is the generic prompt — a stable
+          // prefix shared across ALL domains, so its cache holds for the whole
+          // session. The second is domain-specific reference material so the
+          // questions are inherent to the domain under analysis (scenario,
+          // decision, and distractors all anchored in that domain's mechanisms).
+          // A full mock generates blocks grouped by domain, so the brief's cache
+          // also holds across each domain's consecutive calls.
+          system: [
+            { type: 'text', text: EXAM_SYSTEM_PROMPT, cache_control: { type: 'ephemeral' } },
+            { type: 'text', text: domainBrief(domain), cache_control: { type: 'ephemeral' } },
+          ],
           // No extended thinking: the system prompt fully specifies the task, so
           // thinking only adds latency for this generation.
           thinking: { type: 'disabled' },
