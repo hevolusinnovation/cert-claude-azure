@@ -320,18 +320,22 @@ export default function ExamRunner() {
   );
 
   // --- Stream the current block, then pre-generate the rest in the background. ---
-  // The current block streams live; every other not-yet-generated block is
-  // pre-fetched concurrently (bounded) and saved, so once the first question is
-  // up the whole exam fills in behind the scenes and later questions are instant.
+  // The current block streams live; the remaining not-yet-generated blocks are
+  // pre-fetched one at a time and saved, so the exam fills in behind the scenes.
   useEffect(() => {
     if (!state || state.finished || apiKeyMissing) return;
     if (!state.blocks[state.blockIdx]) {
       if (!error && streaming?.index !== state.blockIdx) streamBlock(state.blockIdx);
       return;
     }
-    // Background pre-generation: keep up to MAX_INFLIGHT generations running,
-    // filling ahead from the current question to the end of the exam.
-    const MAX_INFLIGHT = 3;
+    // Background pre-generation runs strictly serially (MAX_INFLIGHT = 1). Each
+    // generation reads the questions already asked in the session to avoid
+    // repeats, so concurrent generations would race — none seeing the others'
+    // as-yet-unsaved concepts/stems — and could emit near-duplicates that skew
+    // scoring. Serial generation guarantees every new block sees all prior ones.
+    // The current block still streams live, so the student is never blocked on
+    // the question they're actually answering.
+    const MAX_INFLIGHT = 1;
     for (let i = state.blockIdx + 1; i < state.plan.length; i++) {
       if (fetching.current.size >= MAX_INFLIGHT) break;
       if (!state.blocks[i] && !fetching.current.has(i)) loadBlock(i);
